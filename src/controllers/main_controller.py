@@ -15,6 +15,16 @@ from handlers.youtube_handler import YouTubeHandler
 from models.transcription import Transcription
 from utils import constants as c
 from utils.enums import AudioSource, TranscriptionMethod
+from utils.exceptions import (
+    AudioProcessingError,
+    TranscriptionError,
+    ValidationError,
+    YouTubeDownloadError,
+)
+from utils.logger import get_logger
+from utils.validation import validate_transcription_input
+
+logger = get_logger(__name__)
 
 
 class MainController:
@@ -64,18 +74,27 @@ class MainController:
         object provided. It sets up the necessary configurations and starts the
         transcription process.
 
+        **IMPROVEMENTS**:
+        - Uses structured validation before processing
+        - Uses proper logging instead of print()
+        - Better error categorization
+
         :param transcription: An instance of the Transcription class containing
                               information about the audio to transcribe.
         :type transcription: Transcription
         :return: None
         """
         try:
-            if not transcription.output_file_types:
-                raise ValueError(
-                    "No output file types selected. Please select at least one."
-                )
+            # Validate inputs before proceeding
+            validate_transcription_input(transcription)
 
             self.transcription = transcription
+
+            logger.info(
+                f"Preparing transcription: source={transcription.audio_source.value}, "
+                f"method={transcription.method.value}, "
+                f"lang={transcription.language_code}"
+            )
 
             if transcription.audio_source == AudioSource.FILE:
                 self._prepare_for_file_transcription(transcription.audio_source_path)
@@ -86,7 +105,9 @@ class MainController:
                 if url := transcription.youtube_url:
                     self._prepare_for_youtube_video_transcription(url)
                 else:
-                    raise ValueError("No YouTube video URL provided. Please enter one.")
+                    raise ValidationError(
+                        "youtube_url", "No YouTube video URL provided"
+                    )
 
             threading.Thread(
                 target=lambda loop: loop.run_until_complete(
@@ -95,7 +116,11 @@ class MainController:
                 args=(asyncio.new_event_loop(),),
             ).start()
 
+        except (ValidationError, ValueError) as e:
+            logger.warning(f"Validation failed: {e}")
+            self._handle_exception(e)
         except Exception as e:
+            logger.error(f"Failed to prepare transcription: {e}", exc_info=True)
             self._handle_exception(e)
 
     def stop_recording_from_mic(self) -> None:
@@ -318,11 +343,11 @@ class MainController:
                         (file_path.with_suffix(f".{ext}")).exists()
                         for ext in self.transcription.output_file_types
                     ):
-                        print(f"{file_path} already has transcription(s). Skipping.")
+                        print(f"{file_path} already has transcription(s). Skipping. - main_controller.py:346")
                         continue
 
                     matching_files.append(file_path)
-                    print(f"{file_path} added to the list of files to transcribe!")
+                    print(f"{file_path} added to the list of files to transcribe! - main_controller.py:350")
 
         return matching_files
 

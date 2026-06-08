@@ -128,6 +128,14 @@
       - [Compute Type](#compute-type)
       - [Batch Size](#batch-size)
       - [Use CPU](#use-cpu)
+- [Architecture & Improvements](#architecture--improvements)
+  - [Bug Fixes](#bug-fixes)
+  - [Error Handling](#error-handling)
+  - [Performance](#performance)
+  - [Resilience & Retry Logic](#resilience--retry-logic)
+  - [Logging System](#logging-system)
+  - [Input Validation](#input-validation)
+  - [Progress Tracking](#progress-tracking)
 - [Troubleshooting](#troubleshooting)
 - [Roadmap](#roadmap)
 - [Authors](#authors)
@@ -394,7 +402,13 @@ You can also choose the theme you like best. It can be dark, light, or the one c
       │       dict_utils.py
       │       enums.py
       │       env_keys.py
+      │       exceptions.py
+      │       logger.py
+      │       model_cache.py
       │       path_helper.py
+      │       progress.py
+      │       retry.py
+      │       validation.py
       │
       └───views
           │   __init__.py
@@ -908,6 +922,96 @@ For simplicity, let's divide the possible batch size values into two groups:
 **WhisperX** will use the CPU for transcription if checked. Checked by default if there is no CUDA GPU.
 
 As noted in the [Compute Type](#compute-type) section, the default compute type value for the CPU is `int8`, since many CPUs don't support efficient `float16` or `float32` computation, which would result in an error. Change it at your own risk.
+
+<!-- ARCHITECTURE & IMPROVEMENTS -->
+
+## Architecture & Improvements
+
+This section documents key architectural improvements made to the codebase to enhance reliability, performance, and maintainability.
+
+### Bug Fixes
+
+- **Fixed `process_audio_chunks()` returning early**: In `src/handlers/audio_handler.py`, the method was returning after processing only the **first** audio chunk, discarding all subsequent chunks. This meant that only the first ~5 seconds of audio would be transcribed when using the Google or Whisper API methods with silence splitting enabled. The fix accumulates text from all chunks using `" ".join(full_text_parts)`.
+
+### Error Handling
+
+A structured exception hierarchy was introduced in `src/utils/exceptions.py` to replace ad-hoc error handling:
+
+| Exception | Error Code | Description |
+|-----------|------------|-------------|
+| `AudiotextError` | `UNKNOWN` | Base exception for all application errors |
+| `TranscriptionError` | `TRANSCRIPTION_ERROR` | Transcription process failures |
+| `ModelLoadError` | `MODEL_LOAD_ERROR` | WhisperX model loading failures |
+| `AudioProcessingError` | `AUDIO_PROCESSING_ERROR` | Audio file corruption or unsupported formats |
+| `APIError` | `API_ERROR` | External API call failures (Google, OpenAI) |
+| `YouTubeDownloadError` | `YOUTUBE_DOWNLOAD_ERROR` | YouTube audio download failures |
+| `ValidationError` | `VALIDATION_ERROR` | Input validation failures |
+
+Each exception carries an `error_code`, the original exception (for traceback preservation), and a user-friendly message.
+
+### Performance
+
+**WhisperX Model Caching** (`src/utils/model_cache.py`):
+- Previously, WhisperX models were loaded from scratch for **every** transcription, taking several minutes each time
+- Models are now cached in memory using a singleton `WhisperXModelCache`, keyed by `(model_size, device, compute_type, task, language)`
+- The first transcription still loads the model; subsequent transcriptions with the same configuration use the cached model instantly
+- Alignment models are also cached separately
+- Cache can be cleared manually with `whisperx_cache.clear()`
+
+### Resilience & Retry Logic
+
+The `@retry` decorator (`src/utils/retry.py`) adds automatic retry with exponential backoff to network-dependent operations:
+
+```python
+@retry(max_attempts=3, base_delay=1.0, max_delay=30.0, backoff_factor=2.0)
+```
+
+- Applied to **Google Speech-to-Text API** calls
+- Applied to **OpenAI Whisper API** calls
+- Retries on `ConnectionError`, `TimeoutError`, and `APIError` exceptions
+- Configurable attempt count, delay, and backoff factor
+- Works with both sync and async functions
+
+### Logging System
+
+A centralized logging system (`src/utils/logger.py`) replaces scattered `print()` statements:
+
+- **Structured format**: `timestamp | LEVEL | module | message`
+- **Dual output**: Console and file (`logs/audiotext.log`)
+- **Log levels**: DEBUG, INFO, WARNING, ERROR
+- **Per-module loggers**: Each module gets its own named logger
+- **Auto-rotation**: Log directory is created automatically
+
+### Input Validation
+
+Centralized input validation (`src/utils/validation.py`) ensures all user inputs are checked before processing:
+
+- `validate_file_path()`: Verifies file exists and is a supported format
+- `validate_directory_path()`: Verifies directory exists
+- `validate_youtube_url()`: Validates YouTube URL format (supports `/watch`, `/youtu.be`, `/embed`, `/shorts`)
+- `validate_output_file_types()`: Ensures at least one output type is selected
+- `validate_temperature()`: Ensures value is in [0, 1] range
+- `validate_batch_size()`: Ensures value is between 1 and 64
+- `validate_transcription_input()`: Comprehensive validation of a full Transcription object
+
+### Progress Tracking
+
+The `ProgressTracker` class (`src/utils/progress.py`) provides callback-based progress reporting:
+
+```python
+from utils.progress import ProgressTracker, ProgressStage
+
+tracker = ProgressTracker(callback=lambda msg, pct: update_ui(msg, pct))
+tracker.start("audio.mp3")
+tracker.update(ProgressStage.TRANSCRIBING, 0.5)
+tracker.complete()
+```
+
+Progress stages: `LOADING` → `PROCESSING` → `TRANSCRIBING` → `ALIGNING` → `SAVING` → `COMPLETE`
+
+This is ready for integration with the UI to show real-time progress information to the user.
+
+<p align="right">(<a href="#top">back to top</a>)</p>
 
 ## Troubleshooting
 

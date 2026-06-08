@@ -11,7 +11,11 @@ from moviepy.video.io.VideoFileClip import VideoFileClip
 from pydub import AudioSegment
 from pydub.silence import split_on_silence
 from utils import constants as c
+from utils.exceptions import AudioProcessingError
+from utils.logger import get_logger
 from utils.path_helper import ROOT_PATH
+
+logger = get_logger(__name__)
 
 
 class AudioHandler:
@@ -47,10 +51,15 @@ class AudioHandler:
                 transcription.audio_source_path, chunks_directory
             )
             if audio is None:
-                raise ValueError("Unsupported file type")
+                raise AudioProcessingError(
+                    file_path=str(transcription.audio_source_path)
+                )
 
             if should_split_on_silence:
                 audio_chunks = AudioHandler.split_audio_into_chunks(audio)
+                logger.info(
+                    f"Split audio into {len(audio_chunks)} chunks based on silence"
+                )
             else:
                 audio_chunks = [audio]
 
@@ -58,7 +67,15 @@ class AudioHandler:
                 audio_chunks, transcription, transcription_func, chunks_directory
             )
 
-        except Exception:
+            logger.info(
+                f"Transcription completed: {len(text)} characters from "
+                f"{len(audio_chunks)} chunk(s)"
+            )
+
+        except AudioProcessingError:
+            raise
+        except Exception as e:
+            logger.error(f"Transcription failed: {e}", exc_info=True)
             text = traceback.format_exc()
 
         finally:
@@ -121,6 +138,9 @@ class AudioHandler:
         """
         Process each audio chunk for transcription.
 
+        **BUG FIX**: Previously, this method returned after processing only the first
+        chunk. Now it correctly accumulates text from ALL chunks.
+
         :param audio_chunks: List of audio chunks.
         :type audio_chunks: list[AudioSegment]
         :param transcription: Transcription object containing transcription details.
@@ -133,6 +153,7 @@ class AudioHandler:
         :rtype: str
         """
         recognizer = sr.Recognizer()
+        full_text_parts: list[str] = []
 
         for idx, audio_chunk in enumerate(audio_chunks):
             chunk_filename = os.path.join(chunks_directory, f"chunk{idx}.wav")
@@ -147,13 +168,18 @@ class AudioHandler:
                         audio_data,
                         transcription,
                     )
-                    print(f"chunk text: {chunk_text}")
-                    return chunk_text
+                    logger.info(f"Chunk {idx + 1}/{len(audio_chunks)} transcribed "
+                                f"({len(chunk_text)} chars)")
+                    full_text_parts.append(chunk_text)
 
-                except Exception:
-                    return traceback.format_exc()
+                except Exception as e:
+                    logger.error(f"Failed to transcribe chunk {idx + 1}: {e}",
+                                 exc_info=True)
+                    full_text_parts.append(
+                        f"[Error transcribing chunk {idx + 1}: {e}]"
+                    )
 
-        return ""
+        return " ".join(full_text_parts)
 
     @staticmethod
     def cleanup(chunks_directory: Path) -> None:
@@ -187,6 +213,6 @@ class AudioHandler:
         compressed_audio.name = "audiotext-audio.mp3"
 
         size_in_mb = len(compressed_audio.getvalue()) / (1024 * 1024)
-        print(f"Compressed audio size: {size_in_mb:.2f} MB")
+        print(f"Compressed audio size: {size_in_mb:.2f} MB - audio_handler.py:216")
 
         return compressed_audio

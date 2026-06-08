@@ -6,7 +6,12 @@ from typing import Optional, Union
 import utils.config_manager as cm
 import whisperx
 from models.transcription import Transcription
+from utils.exceptions import TranscriptionError
+from utils.logger import get_logger
+from utils.model_cache import whisperx_cache
 from whisperx.types import AlignedTranscriptionResult, TranscriptionResult
+
+logger = get_logger(__name__)
 
 
 class WhisperXHandler:
@@ -18,6 +23,9 @@ class WhisperXHandler:
     async def transcribe_file(self, transcription: Transcription) -> str:
         """
         Transcribe audio from a file using the WhisperX library.
+
+        **IMPROVEMENT**: Uses model cache to avoid reloading WhisperX models
+        for each transcription. This can reduce loading time from minutes to seconds.
 
         :param transcription: An instance of Transcription containing information about
                               the audio file.
@@ -37,9 +45,10 @@ class WhisperXHandler:
         task = "translate" if transcription.should_translate else "transcribe"
 
         try:
-            model = whisperx.load_model(
-                config_whisperx.model_size,
-                device,
+            # Use the cached model - avoids reloading for every transcription
+            model = whisperx_cache.get_model(
+                model_size=config_whisperx.model_size,
+                device=device,
                 compute_type=config_whisperx.compute_type,
                 task=task,
                 language=transcription.language_code,
@@ -47,23 +56,35 @@ class WhisperXHandler:
 
             audio_path = str(transcription.audio_source_path)
             audio = whisperx.load_audio(audio_path)
+
+            logger.info(
+                f"Starting WhisperX transcription: {transcription.audio_source_path.name} "
+                f"(model: {config_whisperx.model_size}, device: {device})"
+            )
             self._whisperx_result = model.transcribe(
                 audio, batch_size=config_whisperx.batch_size
             )
 
             if self._whisperx_result is None:
-                raise ValueError("Something went wrong while transcribing.")
+                raise TranscriptionError("Something went wrong while transcribing.")
 
             text_combined = " ".join(
                 segment["text"].strip() for segment in self._whisperx_result["segments"]
             )
+            logger.info(
+                f"Transcription completed: {len(text_combined)} chars from "
+                f"{len(self._whisperx_result['segments'])} segments"
+            )
 
-            # Align output if should subtitle
+            # Align output if subtitles are needed
             if (
                 "srt" in transcription.output_file_types
                 or "vtt" in transcription.output_file_types
             ):
-                model_aligned, metadata = whisperx.load_align_model(
+                logger.info(
+                    f"Aligning transcription for language: {transcription.language_code}"
+                )
+                model_aligned, metadata = whisperx_cache.get_align_model(
                     language_code=transcription.language_code, device=device
                 )
                 self._whisperx_result = whisperx.align(
@@ -74,10 +95,15 @@ class WhisperXHandler:
                     device,
                     return_char_alignments=False,
                 )
+                logger.info("Alignment completed")
 
             return text_combined
 
         except Exception:
+            logger.error(
+                f"WhisperX transcription failed for {transcription.audio_source_path}",
+                exc_info=True,
+            )
             return traceback.format_exc()
 
     def save_transcription(
