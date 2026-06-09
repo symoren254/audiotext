@@ -22,7 +22,12 @@ class App(ctk.CTk):  # type: ignore[misc]
         ctk.set_default_color_theme("blue")
 
         self.title(c.APP_NAME)
-        self.wm_iconbitmap(ph.ROOT_PATH / "res/windows/icon.ico")
+
+        # Set window icon - handle cross-platform compatibility
+        try:
+            self.wm_iconbitmap(ph.ROOT_PATH / "res/windows/icon.ico")
+        except Exception:
+            pass  # Icon is optional; fallback to default on unsupported platforms
 
         # Initial size of the window
         width = 1000

@@ -1,24 +1,21 @@
 import os
 import traceback
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional
 
-import utils.config_manager as cm
 import whisperx
+import utils.config_manager as cm
 from models.transcription import Transcription
 from utils.exceptions import TranscriptionError
 from utils.logger import get_logger
 from utils.model_cache import whisperx_cache
-from whisperx.types import AlignedTranscriptionResult, TranscriptionResult
 
 logger = get_logger(__name__)
 
 
 class WhisperXHandler:
     def __init__(self) -> None:
-        self._whisperx_result: Optional[
-            Union[TranscriptionResult, AlignedTranscriptionResult]
-        ] = None
+        self._whisperx_result: Optional[Any] = None
 
     async def transcribe_file(self, transcription: Transcription) -> str:
         """
